@@ -4,7 +4,7 @@ import time
 import numpy as np
 import random
 
-from transformers import AutoModel, AdamW, get_linear_schedule_with_warmup
+from transformers import AutoModel, AutoModelForSequenceClassification, AdamW, get_linear_schedule_with_warmup
 from models import BaselineLogisticRegression, VanillaSciBERT, BERT_BiLSTM, BERT_Linear
 from config import read_config
 
@@ -60,6 +60,94 @@ def train_baseline(train_dataloader):
     time_taken = end - start
 
     return classifier, time_taken
+
+
+def train_vanilla_scibert(train_dataloader):
+    model = AutoModelForSequenceClassification.from_pretrained(
+        'allenai/scibert_scivocab_uncased',
+        output_attentions=False,
+        output_hidden_states=False,
+        num_labels=2)
+
+    optimizer = AdamW(model.parameters(),
+                      lr=2e-5,
+                      eps=1e-8
+                      )
+
+    epochs = int(HYPERPARAMS["EPOCHS"])
+
+    total_steps = len(train_dataloader) * epochs
+
+    scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                num_warmup_steps=0,  # Default value in run_glue.py
+                                                num_training_steps=total_steps)
+
+    seed_val = int(HYPERPARAMS["SEED_VALUE"])
+
+    random.seed(seed_val)
+    np.random.seed(seed_val)
+    torch.manual_seed(seed_val)
+    torch.cuda.manual_seed_all(seed_val)
+
+    total_t0 = time.time()
+
+    random.seed(seed_val)
+    np.random.seed(seed_val)
+    torch.manual_seed(seed_val)
+    torch.cuda.manual_seed_all(seed_val)
+
+    loss_values = []
+
+    for epoch in range(epochs):
+        print(f"============= Epoch {epoch + 1} / {epochs} =============")
+        print(f"============= Training =============")
+
+        start_time = time.time()
+        total_loss = 0
+
+        model.train()
+
+        for step, batch in enumerate(train_dataloader):
+            if step % 100 == 0 and not step == 0:
+                elapsed = format_time(time.time() - start_time)
+                print(
+                    f"\nBatch {step} of {len(train_dataloader)}. Elapsed: {elapsed}")
+
+            b_input_ids = batch[0].to(device)
+            b_input_mask = batch[1].to(device)
+            b_labels = batch[3].to(device)
+
+            model.zero_grad()
+
+            output = model(b_input_ids,
+                           token_type_ids=None,
+                           attention_mask=b_input_mask,
+                           labels=b_labels)
+
+            loss = output[0]
+
+            total_loss += loss.item()
+
+            loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            optimizer.step()
+
+            scheduler.step()
+
+        avg_train_loss = total_loss / len(train_dataloader)
+
+        loss_values.append(avg_train_loss)
+        print("")
+        print(f"==== Average Training Loss: {avg_train_loss} ====")
+        print(f"==== Training Epoch Time: {time.time() - start_time} ====")
+
+    end = time.time()
+    print("\n")
+    print("Training Completed!")
+    time_taken = end - total_t0
+    return model, time_taken
 
 
 def train_scibert_linear(train_dataloader, train_sentences, train_labels):
