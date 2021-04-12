@@ -47,4 +47,8 @@ python inference.py --model {baseline, bert-linear, bert-bilstm}
 
 This will save the model in the directory specified in the ```config.ini``` file in the same folder
 
-
+To run subtask_B, run the following
+```
+cd subtask_B
+python main.py
+```
