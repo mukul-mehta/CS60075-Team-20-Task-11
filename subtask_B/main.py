@@ -1,5 +1,4 @@
 
-from transformers import AutoTokenizer, AutoModel
 import os
 import copy
 import random
@@ -11,6 +10,11 @@ import torch.optim as optim
 import time
 import utils
 
+from transformers import AutoTokenizer, AutoModel
+from models import *
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
 val = 42
 random.seed(val)
 np.random.seed(val)
@@ -19,7 +23,7 @@ torch.cuda.manual_seed_all(val)
 
 # Training set
 
-inp_dir = "../working-datasets/train/"
+inp_dir = "../datasets/train/"
 folders = ["query_wellformedness", "passage_re-ranking", "part-of-speech_tagging",
            "sentence_compression", "sentiment_analysis", "temporal_information_extraction",
            "phrase_grounding", "text_generation", "text-to-speech_synthesis",
@@ -64,7 +68,7 @@ for folder in folders:
 
 # Validation Set
 
-valid_inp_dir = "../working-datasets/validation/"
+valid_inp_dir = "../datasets/validation/"
 valid_list_of_folders = ["machine-translation", "named-entity-recognition",
                          "question-answering", "relation-classification", "text-classification"]
 valid_in_stanza_list = []
@@ -170,135 +174,6 @@ for i, out in enumerate(valid_taskB_label):
 # TRAINING MODEL
 
 
-class BiLSTM_CRF(nn.Module):
-
-    def __init__(self, biluo_code, embedding_dim, hidden_dim):
-        super(BiLSTM_CRF, self).__init__()
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.biluo_code = biluo_code
-        self.tagset_size = len(biluo_code)
-
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
-                            num_layers=1, bidirectional=True)
-
-        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
-
-        self.modell = AutoModel.from_pretrained(
-            "allenai/scibert_scivocab_uncased")
-
-        self.transitions = nn.Parameter(
-            torch.randn(self.tagset_size, self.tagset_size))
-
-        self.transitions.data[biluo_code[START_TAG], :] = -10000
-        self.transitions.data[:, biluo_code[STOP_TAG]] = -10000
-
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        return (torch.randn(2, 1, self.hidden_dim // 2).to(device),
-                torch.randn(2, 1, self.hidden_dim // 2).to(device))
-
-    def _forward_alg(self, feats):
-
-        init_alphas = torch.full((1, self.tagset_size), -10000.).to(device)
-
-        init_alphas[0][self.biluo_code[START_TAG]] = 0.
-
-        forward_var = init_alphas
-
-        for feat in feats:
-            alphas_t = []
-            for next_tag in range(self.tagset_size):
-
-                emit_score = feat[next_tag].view(
-                    1, -1).expand(1, self.tagset_size)
-
-                trans_score = self.transitions[next_tag].view(1, -1)
-
-                next_tag_var = forward_var + trans_score + emit_score
-
-                alphas_t.append(utils.log_func(next_tag_var).view(1))
-            forward_var = torch.cat(alphas_t).view(1, -1)
-        terminal_var = forward_var + \
-            self.transitions[self.biluo_code[STOP_TAG]]
-        alpha = utils.log_func(terminal_var)
-        return alpha
-
-    def _get_lstm_features(self, sentence):
-
-        outputs = self.modell(**sentence, output_hidden_states=True)
-        scibert_out = ((outputs[2][12])[0]).view(
-            len(sentence["input_ids"][0]), 1, -1)
-        self.hidden = self.init_hidden()
-        lstm_out, self.hidden = self.lstm(scibert_out, self.hidden)
-        lstm_out = lstm_out.view(
-            len(sentence["input_ids"][0]), self.hidden_dim)
-        lstm_feats = self.hidden2tag(lstm_out)
-        return lstm_feats
-
-    def _score_sentence(self, feats, tags):
-
-        score = torch.zeros(1).to(device)
-        tags = torch.cat(
-            [torch.tensor([self.biluo_code[START_TAG]], dtype=torch.long).to(device), tags])
-        for i, feat in enumerate(feats):
-            score = score + \
-                self.transitions[tags[i + 1], tags[i]] + feat[tags[i + 1]]
-        score = score + self.transitions[self.biluo_code[STOP_TAG], tags[-1]]
-        return score
-
-    def _viterbi_decode(self, feats):
-        backpointers = []
-
-        init_vvars = torch.full((1, self.tagset_size), -10000.).to(device)
-        init_vvars[0][self.biluo_code[START_TAG]] = 0
-
-        forward_var = init_vvars
-        for feat in feats:
-            bptrs_t = []
-            viterbivars_t = []
-
-            for next_tag in range(self.tagset_size):
-
-                next_tag_var = forward_var + self.transitions[next_tag]
-                best_tag_id = utils.maxval(next_tag_var)
-                bptrs_t.append(best_tag_id)
-                viterbivars_t.append(next_tag_var[0][best_tag_id].view(1))
-
-            forward_var = (torch.cat(viterbivars_t) + feat).view(1, -1)
-            backpointers.append(bptrs_t)
-
-        terminal_var = forward_var + \
-            self.transitions[self.biluo_code[STOP_TAG]]
-        best_tag_id = utils.maxval(terminal_var)
-        path_score = terminal_var[0][best_tag_id]
-
-        best_path = [best_tag_id]
-        for bptrs_t in reversed(backpointers):
-            best_tag_id = bptrs_t[best_tag_id]
-            best_path.append(best_tag_id)
-
-        start = best_path.pop()
-        assert start == self.biluo_code[START_TAG]
-        best_path.reverse()
-        return path_score, best_path
-
-    def neg_log_likelihood(self, sentence, tags):
-
-        feats = self._get_lstm_features(sentence)
-        forward_score = self._forward_alg(feats)
-        gold_score = self._score_sentence(feats, tags)
-        return forward_score - gold_score
-
-    def forward(self, sentence):
-
-        lstm_feats = self._get_lstm_features(sentence)
-
-        score, tag_seq = self._viterbi_decode(lstm_feats)
-        return score, tag_seq
-
-
 START_TAG = "<START>"
 STOP_TAG = "<STOP>"
 EMBEDDING_DIM = 768
@@ -313,7 +188,6 @@ biluo_decode = {v: k for k, v in biluo_code.items()}
 tokenizer = AutoTokenizer.from_pretrained("allenai/scibert_scivocab_uncased")
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = BiLSTM_CRF(biluo_code, EMBEDDING_DIM, HIDDEN_DIM)
 optimizer = optim.AdamW(model.parameters(), lr=2e-5)
 if (device == 'cuda'):
@@ -346,7 +220,7 @@ def eval_func(listp, listg):
     return correct, total_p
 
 
-def train_eval():
+def training_loop():
 
     taskB_out_label = []
     for i, file in enumerate(taskB_in):
@@ -381,7 +255,7 @@ def train_eval():
         precision, recall, F1score))
 
 
-def validation_eval():
+def validation_loop():
 
     valid_taskB_out_label = []
     for i, file in enumerate(valid_taskB_in):
@@ -461,8 +335,8 @@ for epoch in range(4):
     print("Epoch ", epoch, " completed. Time taken : ", end-start)
 
     model.eval()
-    train_eval()
-    validation_eval()
+    training_loop()
+    validation_loop()
     valid_total_loss = 0.
     with torch.no_grad():
         for k, valid_file in enumerate(valid_taskB_in):
@@ -491,7 +365,7 @@ model.eval()
 
 # Test set
 
-test_inp_dir = "../working-datasets/test/"
+test_inp_dir = "../datasets/test/"
 
 test_list_of_folders = ["constituency_parsing", "coreference_resolution",
                         "data-to-text_generation", "dependency_parsing",
@@ -499,12 +373,12 @@ test_list_of_folders = ["constituency_parsing", "coreference_resolution",
                         "face_alignment", "face_detection", "hypernym_discovery",
                         "natural_language_inference"]
 
-test_in_stanza_list = []
-test_in_sent_numbers = []
-test_in_entities = []
-test_file_name_list = []
+stanza_list_test = []
+stanza_sent_numbers = []
+entities_test = []
+filename_list_entities = []
 test_total_phrases_truth = 0
-Capital_test_in_stanza_list = []
+Capital_stanza_list_test = []
 
 for folder in test_list_of_folders:
     cnt = 0
@@ -518,49 +392,49 @@ for folder in test_list_of_folders:
                 Capital_stanza_lines = stanza_file.read()
                 Capital_stanza_lines_list = list(
                     filter(None, Capital_stanza_lines.splitlines()))
-                Capital_test_in_stanza_list.append(Capital_stanza_lines_list)
+                Capital_stanza_list_test.append(Capital_stanza_lines_list)
 
                 stanza_lines = Capital_stanza_lines.lower()
                 stanza_lines_list = list(
                     filter(None, stanza_lines.splitlines()))
-                test_in_stanza_list.append(stanza_lines_list)
+                stanza_list_test.append(stanza_lines_list)
             if files.endswith("sentences.txt"):
                 sentence_file = open(
                     test_inp_dir + folder + '/' + str(i) + '/' + 'sentences.txt', "r")
                 sentence_num_list = list(
                     filter(None, (sentence_file.read().lower()).splitlines()))
-                test_in_sent_numbers.append(list(map(int, sentence_num_list)))
+                stanza_sent_numbers.append(list(map(int, sentence_num_list)))
 
-        test_file_name_list.append(folder + '/' + str(i))
+        filename_list_entities.append(folder + '/' + str(i))
 
 
 test_taskB_in = []
 Capital_test_taskB_in = []
 
-for i in range(len(test_in_sent_numbers)):
+for i in range(len(stanza_sent_numbers)):
 
-    test_sent_num_list = copy.deepcopy(test_in_sent_numbers[i])
+    test_sent_num_list = copy.deepcopy(stanza_sent_numbers[i])
     test_sent_num_list.sort()
     test_sent_list = []
     Capital_test_sent_list = []
 
     for x in test_sent_num_list:
-        test_sent_list.append(test_in_stanza_list[i][x-1])
-        Capital_test_sent_list.append(Capital_test_in_stanza_list[i][x-1])
+        test_sent_list.append(stanza_list_test[i][x-1])
+        Capital_test_sent_list.append(Capital_stanza_list_test[i][x-1])
 
     test_taskB_in.append(test_sent_list)
     Capital_test_taskB_in.append(Capital_test_sent_list)
 
 
 list_of_dict_for_number_to_sentence = []
-for i in range(len(test_in_stanza_list)):
+for i in range(len(stanza_list_test)):
 
-    test_sent_num_list = copy.deepcopy(test_in_sent_numbers[i])
+    test_sent_num_list = copy.deepcopy(stanza_sent_numbers[i])
     test_sent_num_list.sort()
     test_sent_list = []
 
     for x in test_sent_num_list:
-        test_sent_list.append(test_in_stanza_list[i][x-1])
+        test_sent_list.append(stanza_list_test[i][x-1])
     test_sent_dict_list = dict(zip(test_sent_num_list, test_sent_list))
     list_of_dict_for_number_to_sentence.append(test_sent_dict_list)
 
@@ -586,9 +460,9 @@ for i, file in enumerate(test_taskB_in):
 
 for i, file in enumerate(test_taskB_in):
 
-    print(test_file_name_list[i])
+    print(filename_list_entities[i])
 
-    f1 = open(test_inp_dir + test_file_name_list[i] + "/entities.txt", "w")
+    f1 = open(test_inp_dir + filename_list_entities[i] + "/entities.txt", "w")
     f1.seek(0)
     f1.truncate()
 
