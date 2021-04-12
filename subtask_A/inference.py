@@ -1,37 +1,23 @@
+import argparse
+from random import choice
 import torch
 import numpy as np
 
 from transformers import AutoTokenizer, AutoModel
 from dataloader import prepare_data, create_dataloader
 from config import read_config
+from training import *
 from sklearn.metrics import accuracy_score, classification_report, matthews_corrcoef
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--config', default="config.ini",
+                    help="INI file for model configuration")
+parser.add_argument('--model', help="Which model to run",
+                    choices=["baseline", "vanilla-bert", "bert-linear", "bert-bilstm"], default="bert-linear")
+
 
 PATHS = read_config(filename="config.ini", section="DATASET")
 HYPERPARAMS = read_config(filename="config.ini", section="HYPERPARAMS")
-
-print('Loading SciBERT tokenizer...')
-tokenizer = AutoTokenizer.from_pretrained('allenai/scibert_scivocab_uncased')
-
-batch_size = int(HYPERPARAMS["BATCH_SIZE"])
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-
-train_sentences, train_labels = prepare_data(
-    input_dir=PATHS["TRAIN_DATA_PATH"], oversample=True)
-
-trial_sentences, trial_labels = prepare_data(
-    input_dir=PATHS["VALIDATION_DATA_PATH"], oversample=True)
-
-train_sentences = train_sentences + trial_sentences
-train_labels = train_labels + trial_labels
-
-train_dataloader = create_dataloader(train_sentences, train_labels, tokenizer)
-
-
-test_sentences, test_labels = prepare_data(
-    input_dir=PATHS["TEST_DATA_PATH"], oversample=False)
-
-test_dataloader = create_dataloader(test_sentences, test_labels, tokenizer)
 
 
 def predict_labels_baseline(classifier, test_dataloader):
@@ -113,7 +99,8 @@ def predict_labels_scibert_linear(model, test_dataloader):
 
 
 def predict_labels_scibert_bilstm(model, test_dataloader):
-    print(f"Predicting labels for {len(test_dataloader) * batch_size)} test sentences for SciBERT-BiLSTM")
+    print(
+        f"Predicting labels for {len(test_dataloader) * batch_size} test sentences for SciBERT-BiLSTM")
     # Put model in evaluation mode
     model.eval()
 
@@ -156,3 +143,58 @@ def predict_labels_scibert_bilstm(model, test_dataloader):
     report = classification_report(flat_true_labels, flat_predictions)
 
     return mcc, report
+
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+    print(args.model)
+
+    print('Loading SciBERT tokenizer...')
+    tokenizer = AutoTokenizer.from_pretrained(
+        'allenai/scibert_scivocab_uncased')
+
+    batch_size = int(HYPERPARAMS["BATCH_SIZE"])
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    train_sentences, train_labels = prepare_data(
+        input_dir=PATHS["TRAIN_DATA_PATH"], oversample=True)
+
+    trial_sentences, trial_labels = prepare_data(
+        input_dir=PATHS["VALIDATION_DATA_PATH"], oversample=True)
+
+    train_sentences = train_sentences + trial_sentences
+    train_labels = train_labels + trial_labels
+
+    train_dataloader = create_dataloader(
+        train_sentences, train_labels, tokenizer)
+
+    test_sentences, test_labels = prepare_data(
+        input_dir=PATHS["TEST_DATA_PATH"], oversample=False)
+
+    test_dataloader = create_dataloader(test_sentences, test_labels, tokenizer)
+
+    if args.model == "baseline":
+        classifier, time_taken = train_baseline(train_dataloader)
+        mcc, report = predict_labels_baseline(classifier, test_dataloader)
+
+        print(f"Time Taken is {time_taken} seconds")
+        print(f"MCC Score is {mcc}")
+        print(report)
+
+    if args.model == "bert-linear":
+        model, time_taken = train_scibert_linear(
+            train_dataloader, train_sentences, train_labels, True)
+        mcc, report = predict_labels_scibert_linear(model, test_dataloader)
+
+        print(f"Time Taken is {time_taken} seconds")
+        print(f"MCC Score is {mcc}")
+        print(report)
+
+    if args.model == "bert-bilstm":
+        model, time_taken = train_scibert_bilstm(
+            train_dataloader, train_sentences, train_labels, True)
+        mcc, report = predict_labels_scibert_bilstm(model, test_dataloader)
+
+        print(f"Time Taken is {time_taken} seconds")
+        print(f"MCC Score is {mcc}")
+        print(report)

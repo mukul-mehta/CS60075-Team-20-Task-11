@@ -1,6 +1,7 @@
 import datetime
 import torch
 import time
+import os
 import numpy as np
 import random
 
@@ -62,7 +63,7 @@ def train_baseline(train_dataloader):
     return classifier, time_taken
 
 
-def train_vanilla_scibert(train_dataloader):
+def train_vanilla_scibert(train_dataloader, save_model=True):
     model = AutoModelForSequenceClassification.from_pretrained(
         'allenai/scibert_scivocab_uncased',
         output_attentions=False,
@@ -147,10 +148,15 @@ def train_vanilla_scibert(train_dataloader):
     print("\n")
     print("Training Completed!")
     time_taken = end - total_t0
+
+    if save_model:
+        torch.save(model.state_dict(), os.path.join(
+            HYPERPARAMS["SAVE_MODEL_PATH"], "vanilla_bert_model.bin"))
+
     return model, time_taken
 
 
-def train_scibert_linear(train_dataloader, train_sentences, train_labels):
+def train_scibert_linear(train_dataloader, train_sentences, train_labels, save_model=True):
     label0_sent = [i for i, j in zip(train_sentences, train_labels) if j == 0]
     label1_sent = [i for i, j in zip(train_sentences, train_labels) if j == 1]
     c_weights = [len(label1_sent), len(label0_sent)]
@@ -294,10 +300,14 @@ def train_scibert_linear(train_dataloader, train_sentences, train_labels):
     print("Training complete!")
 
     print("Total training took {:} (h:mm:ss)".format(time_taken))
+
+    if save_model:
+        torch.save(model.state_dict(), os.path.join(
+            HYPERPARAMS["SAVE_MODEL_PATH"], "bert_linear_model.bin"))
     return model, time_taken
 
 
-def train_scibert_bilstm(train_dataloader, train_sentences, train_labels):
+def train_scibert_bilstm(train_dataloader, train_sentences, train_labels, save_model=True):
     label0_sent = [i for i, j in zip(train_sentences, train_labels) if j == 0]
     label1_sent = [i for i, j in zip(train_sentences, train_labels) if j == 1]
     c_weights = [len(label1_sent), len(label0_sent)]
@@ -431,4 +441,8 @@ def train_scibert_bilstm(train_dataloader, train_sentences, train_labels):
     print("")
     print("Training complete!")
     print("Total training took {:} (h:mm:ss)".format(time_taken))
+
+    if save_model:
+        torch.save(model.state_dict(), os.path.join(
+            HYPERPARAMS["SAVE_MODEL_PATH"], "bert_bilstm_model.bin"))
     return model, time_taken
