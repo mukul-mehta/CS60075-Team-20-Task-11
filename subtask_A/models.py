@@ -2,9 +2,26 @@ from transformers import AutoModelForSequenceClassification
 from subtask_A.dataloader import HYPERPARAMS
 import torch
 from transformers import AutoModel
+from sklearn.linear_model import LogisticRegression
 from config import read_config
 
 HYPERPARAMS = read_config(filename="config.ini", section="HYPERPARAMS")
+
+
+class BaselineLogisticRegression:
+    def __init__(self, train_embeddings, train_labels):
+        self.classifier = LogisticRegression()
+        self.train_embeddings = train_embeddings
+        self.train_labels = train_labels
+
+    def fit(self):
+        self.classifier = self.classifier.fit(
+            self.train_embeddings, self.train_labels)
+        return self.classifier
+
+    def predict(self, test_embeddings):
+        predictions = self.classifier.predict(test_embeddings)
+        return predictions
 
 
 VanillaSciBERT = AutoModelForSequenceClassification.from_pretrained(
@@ -72,6 +89,7 @@ class BERT_BiLSTM(torch.nn.Module):
 
 
 MODELS = {
+    "BaselineLogisticRegression": BaselineLogisticRegression,
     "VanillaSciBERT": VanillaSciBERT,
     "BERT_Linear": BERT_Linear,
     "BERT_BiLSTM": BERT_BiLSTM
